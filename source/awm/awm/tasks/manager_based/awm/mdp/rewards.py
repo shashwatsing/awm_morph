@@ -155,6 +155,34 @@ def rough_terrain_speed_penalty(
     return torch.clamp(speed * terrain_difficulty, max=5.0)
 
 
+def velocity_tracking_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str = "vel_cmd",
+    std: float = 0.2,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward for matching commanded forward speed. Uses exp(-error^2 / std^2)."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    vx_cmd = env.command_manager.get_command(command_name)[:, 0]
+    vx_actual = asset.data.root_lin_vel_b[:, 0]
+    error = torch.square(vx_cmd - vx_actual)
+    return torch.nan_to_num(torch.exp(-error / (std ** 2)), nan=0.0)
+
+
+def yaw_rate_tracking_reward(
+    env: ManagerBasedRLEnv,
+    command_name: str = "vel_cmd",
+    std: float = 0.3,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Reward for matching commanded yaw rate. Uses exp(-error^2 / std^2)."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    yaw_cmd = env.command_manager.get_command(command_name)[:, 1]
+    yaw_actual = asset.data.root_ang_vel_b[:, 2]
+    error = torch.square(yaw_cmd - yaw_actual)
+    return torch.nan_to_num(torch.exp(-error / (std ** 2)), nan=0.0)
+
+
 def wheel_slip_penalty(
     env: ManagerBasedRLEnv,
     wheel_radius: float = 0.1,

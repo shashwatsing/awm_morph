@@ -9,7 +9,6 @@ import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
-from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -169,6 +168,17 @@ class ActionsCfg:
 
 
 @configclass
+class CommandsCfg:
+    """Velocity commands sampled each episode."""
+
+    vel_cmd = mdp.UniformVelCommandCfg(
+        resampling_time_range=(5.0, 10.0),
+        vx_range=(0.3, 0.8),
+        yaw_rate_range=(-1.0, 1.0),
+    )
+
+
+@configclass
 class ObservationsCfg:
     """Observation specifications for the MDP."""
 
@@ -176,8 +186,15 @@ class ObservationsCfg:
     class PolicyCfg(ObsGroup):
         """Observations for policy group."""
 
-        distance_to_goal = ObsTerm(func=mdp.distance_to_goal, params={"goal_distance": 5.0})
+        # Velocity commands from operator (what we're trying to track)
+        commanded_velocity = ObsTerm(
+            func=mdp.commanded_velocity,
+            params={"command_name": "vel_cmd"},
+        )
+        # Robot velocity feedback
         base_lin_vel_x = ObsTerm(func=mdp.base_lin_vel_x)
+        base_ang_vel_z = ObsTerm(func=mdp.base_ang_vel_z)
+        # Wheel state
         wheel_velocities = ObsTerm(
             func=mdp.wheel_velocities,
             params={
@@ -187,6 +204,7 @@ class ObservationsCfg:
                 )
             },
         )
+        # Leg state
         leg_positions = ObsTerm(
             func=mdp.leg_positions,
             params={
@@ -196,8 +214,9 @@ class ObservationsCfg:
                 )
             },
         )
-        projected_gravity = ObsTerm(func=mdp.projected_gravity)
         leg_actions = ObsTerm(func=mdp.leg_actions, params={"num_wheels": 4})
+        # Terrain / stability feedback
+        projected_gravity = ObsTerm(func=mdp.projected_gravity)
         progress_slip_hist = ObsTerm(
             func=mdp.progress_slip_history,
             params={
@@ -208,10 +227,6 @@ class ObservationsCfg:
                 "wheel_radius": 0.1,
                 "ema_alpha": 0.1,
             },
-        )
-        wheel_contact_forces = ObsTerm(
-            func=mdp.wheel_contact_forces,
-            params={"sensor_name": "contact_forces", "body_names": "wheel_.*"},
         )
 
         def __post_init__(self) -> None:
@@ -280,19 +295,18 @@ class EventCfg:
 class RewardsCfg:
     """Reward terms for the MDP."""
 
-    progress_to_goal = RewTerm(func=mdp.progress_to_goal, weight=2.0, params={"goal_distance": 5.0})
-    forward_vel = RewTerm(func=mdp.forward_velocity_reward, weight=1.0)
-    wheel_slip = RewTerm(
-        func=mdp.wheel_slip_penalty,
-        weight=-0.4,
-        params={
-            "wheel_radius": 0.1,
-            "asset_cfg": SceneEntityCfg(
-                "robot",
-                joint_names=["wheel_F_L", "wheel_F_R", "wheel_B_R", "wheel_B_L"],
-            ),
-        },
+    # Primary: track commanded velocity
+    vel_tracking = RewTerm(
+        func=mdp.velocity_tracking_reward,
+        weight=2.0,
+        params={"command_name": "vel_cmd", "std": 0.2},
     )
+    yaw_tracking = RewTerm(
+        func=mdp.yaw_rate_tracking_reward,
+        weight=0.5,
+        params={"command_name": "vel_cmd", "std": 0.3},
+    )
+    # Morphology efficiency: penalize leg extension on flat/easy terrain
     leg_extension_efficiency = RewTerm(
         func=mdp.leg_extension_efficiency,
         weight=-1.0,
@@ -302,6 +316,18 @@ class RewardsCfg:
                 joint_names=["leg_F_L", "leg_F_R", "leg_B_L", "leg_B_R"],
             ),
             "tilt_threshold": 0.15,
+        },
+    )
+    # Stability penalties
+    wheel_slip = RewTerm(
+        func=mdp.wheel_slip_penalty,
+        weight=-0.4,
+        params={
+            "wheel_radius": 0.1,
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=["wheel_F_L", "wheel_F_R", "wheel_B_R", "wheel_B_L"],
+            ),
         },
     )
     lin_vel_z = RewTerm(func=mdp.lin_vel_z_l2, weight=-0.5)
@@ -315,21 +341,10 @@ class RewardsCfg:
 
 
 @configclass
-class CurriculumCfg:
-    """Terrain curriculum based on goal-reaching success."""
-
-    terrain_levels = CurrTerm(
-        func=mdp.terrain_levels_goal,
-        params={"goal_distance": 5.0, "goal_radius": 1.0},
-    )
-
-
-@configclass
 class TerminationsCfg:
     """Termination terms for the MDP."""
 
     time_out = DoneTerm(func=mdp.time_out, time_out=True)
-    goal_reached = DoneTerm(func=mdp.goal_reached, params={"goal_distance": 5.0, "goal_radius": 1})
     high_velocity = DoneTerm(func=mdp.high_base_velocity)
 
 
@@ -338,41 +353,16 @@ class AwmEnvCfg(ManagerBasedRLEnvCfg):
     scene: AwmSceneCfg = AwmSceneCfg(num_envs=50, env_spacing=3.0)
     observations: ObservationsCfg = ObservationsCfg()
     actions: ActionsCfg = ActionsCfg()
+    commands: CommandsCfg = CommandsCfg()
     events: EventCfg = EventCfg()
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
-    curriculum: CurriculumCfg = CurriculumCfg()
-
-    goal_distance: float = 5.0
-    goal_radius: float = 1.0
+    curriculum = None  # No goal-based curriculum; terrain mix is fixed
 
     def __post_init__(self) -> None:
         self.decimation = 2
-        self.episode_length_s = 30.0
+        self.episode_length_s = 20.0
         self.viewer.eye = (8.0, 0.0, 5.0)
         self.sim.dt = 1.0 / 120.0
         self.sim.render_interval = self.decimation
         self.sim.physics_material = self.scene.terrain.physics_material
-
-        self.observations.policy.distance_to_goal.params["goal_distance"] = self.goal_distance
-        self.rewards.progress_to_goal.params["goal_distance"] = self.goal_distance
-        self.terminations.goal_reached.params["goal_distance"] = self.goal_distance
-        self.terminations.goal_reached.params["goal_radius"] = self.goal_radius
-        self.curriculum.terrain_levels.params["goal_distance"] = self.goal_distance
-        self.curriculum.terrain_levels.params["goal_radius"] = self.goal_radius
-
-
-@configclass
-class AwmFlatEnvCfg(AwmEnvCfg):
-    """Flat-terrain variant of the AWM environment."""
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        self.scene.terrain.terrain_type = "plane"
-        self.scene.terrain.terrain_generator = None
-        self.curriculum = None
-        self.actions.drive.leg_offset = 0.0
-        self.observations.policy.goal_heading = ObsTerm(
-            func=mdp.goal_heading_error,
-            params={"goal_distance": self.goal_distance},
-        )

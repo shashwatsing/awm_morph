@@ -73,6 +73,17 @@ def goal_heading_error(
     )
 
 
+def commanded_velocity(env, command_name: str = "vel_cmd") -> torch.Tensor:
+    """Return the current velocity command [vx_cmd, yaw_rate_cmd] of shape (N, 2)."""
+    return env.command_manager.get_command(command_name)
+
+
+def base_ang_vel_z(env, asset_cfg: SceneEntityCfg = SceneEntityCfg("robot")) -> torch.Tensor:
+    """Return the robot yaw rate (angular velocity about world z) of shape (N, 1)."""
+    asset: Articulation = env.scene[asset_cfg.name]
+    return torch.nan_to_num(asset.data.root_ang_vel_b[:, 2:3], nan=0.0)
+
+
 def wheel_contact_forces(env, sensor_name: str = "contact_forces", body_names: str | list[str] = "wheel_.*") -> torch.Tensor:
     sensor = env.scene.sensors[sensor_name]
     body_ids, _ = sensor.find_bodies(body_names, preserve_order=True)

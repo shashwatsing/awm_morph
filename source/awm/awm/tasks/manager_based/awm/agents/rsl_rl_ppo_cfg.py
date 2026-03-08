@@ -13,10 +13,10 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
     num_steps_per_env = 24
     max_iterations = 30000
     save_interval = 200
-    experiment_name = "awm_manager"
+    experiment_name = "awm_morph"
     empirical_normalization = True
     logger = "wandb"
-    wandb_project = "awm_manager"
+    wandb_project = "awm_morph"
     policy = RslRlPpoActorCriticCfg(
         init_noise_std=0.3,
         actor_obs_normalization=False,
