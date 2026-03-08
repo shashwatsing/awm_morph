@@ -40,6 +40,9 @@ class AwmDriveAction(ActionTerm):
         self._raw_actions = torch.zeros((self.num_envs, self._action_dim), device=self.device) #Wheel targets
         self._wheel_targets = torch.zeros((self.num_envs, len(self._wheel_ids)), device=self.device)
         self._leg_targets = torch.zeros((self.num_envs, len(self._leg_ids)), device=self.device)
+        self._prev_root_x = torch.zeros(self.num_envs, device=self.device)
+        self._stuck_count = torch.zeros(self.num_envs, device=self.device)
+        self._initialized = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
 
     @property
     def action_dim(self) -> int:
@@ -61,9 +64,41 @@ class AwmDriveAction(ActionTerm):
 
         self._wheel_targets = wheel_cmd * self.cfg.max_wheel_speed
 
-        default_leg_pos = self.robot.data.default_joint_pos[:, self._leg_ids]
-        leg_offset = leg_cmd * self.cfg.leg_offset
-        self._leg_targets = default_leg_pos + leg_offset
+        # Convert policy leg action to normalized extension in [0, 1].
+        # leg_offset sets the extension when action=0 (0.0=closed, 0.5=half, 1.0=open).
+        policy_extension = 0.5 * leg_cmd + self.cfg.leg_offset
+        desired_extension = torch.clamp(policy_extension, 0.0, 1.0)
+
+        if self.cfg.use_auto_extension:
+            root_x = self.robot.data.root_pos_w[:, 0]
+            first_step = ~self._initialized
+            self._prev_root_x[first_step] = root_x[first_step]
+            self._initialized[first_step] = True
+
+            step_progress = torch.clamp(root_x - self._prev_root_x, min=0.0)
+            wheel_omega = self.robot.data.joint_vel[:, self._wheel_ids]
+            wheel_lin_speed = torch.abs(wheel_omega) * self.cfg.wheel_radius
+            mean_wheel_speed = torch.mean(wheel_lin_speed, dim=1)
+            base_vx = torch.abs(self.robot.data.root_lin_vel_b[:, 0])
+            slip = torch.clamp(mean_wheel_speed - base_vx, min=0.0)
+
+            stuck_now = (step_progress < self.cfg.progress_threshold) & (slip > self.cfg.slip_threshold)
+            self._stuck_count = torch.where(stuck_now, self._stuck_count + 1.0, torch.zeros_like(self._stuck_count))
+
+            ramp = max(float(self.cfg.stuck_ramp_steps), 1.0)
+            auto_extension = torch.clamp((self._stuck_count - float(self.cfg.stuck_steps)) / ramp, 0.0, 1.0)
+            desired_extension = torch.maximum(desired_extension, auto_extension.unsqueeze(-1))
+            self._prev_root_x[:] = root_x
+
+        limits = self.robot.data.soft_joint_pos_limits[:, self._leg_ids]
+        lower = limits[..., 0]
+        upper = limits[..., 1]
+        if self.cfg.closed_at_upper_limit:
+            # extension=0 -> closed(upper), extension=1 -> open(lower)
+            self._leg_targets = upper - desired_extension * (upper - lower)
+        else:
+            # extension=0 -> closed(lower), extension=1 -> open(upper)
+            self._leg_targets = lower + desired_extension * (upper - lower)
 
     def apply_actions(self):
         self.robot.set_joint_velocity_target(self._wheel_targets, joint_ids=self._wheel_ids)
@@ -81,4 +116,11 @@ class AwmDriveActionCfg(ActionTermCfg):
     leg_joint_names: list[str] = MISSING
     max_wheel_speed: float = 4.0
     leg_offset: float = 0.5
+    use_auto_extension: bool = True
+    wheel_radius: float = 0.1
+    progress_threshold: float = 0.002
+    slip_threshold: float = 0.2
+    stuck_steps: int = 30
+    stuck_ramp_steps: int = 120
+    closed_at_upper_limit: bool = False
     debug_vis: bool = False
