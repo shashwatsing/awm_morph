@@ -9,6 +9,7 @@ import isaaclab.sim as sim_utils
 from isaaclab.actuators import ImplicitActuatorCfg
 from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.envs import ManagerBasedRLEnvCfg
+from isaaclab.managers import CurriculumTermCfg as CurrTerm
 from isaaclab.managers import EventTermCfg as EventTerm
 from isaaclab.managers import ObservationGroupCfg as ObsGroup
 from isaaclab.managers import ObservationTermCfg as ObsTerm
@@ -16,7 +17,7 @@ from isaaclab.managers import RewardTermCfg as RewTerm
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sensors import ContactSensorCfg
+from isaaclab.sensors import ContactSensorCfg, RayCasterCfg, patterns
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
@@ -98,12 +99,12 @@ AWM_ROBOT_CFG = ArticulationCfg(
         ),
         "legs": ImplicitActuatorCfg(
             joint_names_expr=["leg_.*"],
-            effort_limit_sim=0.68,
-            velocity_limit_sim=6.52,
+            effort_limit_sim=2.70,
+            velocity_limit_sim=4.55,
             stiffness=_LEG_KP_SIM,
             damping=_LEG_KD_SIM,
-            armature=0.0048,
-            friction=0.006,
+            armature=0.0022,
+            friction=0.015,
         ),
     },
 )
@@ -117,7 +118,7 @@ class AwmSceneCfg(InteractiveSceneCfg):
         prim_path="/World/ground",
         terrain_type="generator",
         terrain_generator=ROUGH_TERRAINS_CFG,
-        max_init_terrain_level=2,
+        max_init_terrain_level=0,
         collision_group=-1,
         physics_material=sim_utils.RigidBodyMaterialCfg(
             friction_combine_mode="multiply",
@@ -146,6 +147,18 @@ class AwmSceneCfg(InteractiveSceneCfg):
         track_pose=True,
     )
 
+    # Forward-looking terrain scanner: 7×5 grid offset 0.3 m ahead and 0.5 m
+    # above the robot base, firing rays straight down.  attach_yaw_only keeps
+    # the grid aligned with the robot heading so the scan always faces forward.
+    ray_caster = RayCasterCfg(
+        prim_path="{ENV_REGEX_NS}/Robot/awm/body_assembly",
+        offset=RayCasterCfg.OffsetCfg(pos=(0.3, 0.0, 0.5)),
+        pattern_cfg=patterns.GridPatternCfg(resolution=0.15, size=(0.9, 0.6)),
+        ray_alignment="yaw",
+        debug_vis=True,
+        mesh_prim_paths=["/World/ground"],
+    )
+
     dome_light = AssetBaseCfg(
         prim_path="/World/DomeLight",
         spawn=sim_utils.DomeLightCfg(color=(0.9, 0.9, 0.9), intensity=500.0),
@@ -161,7 +174,7 @@ class ActionsCfg:
         wheel_joint_names=["wheel_F_L", "wheel_F_R", "wheel_B_R", "wheel_B_L"],
         leg_joint_names=["leg_F_L", "leg_F_R", "leg_B_L", "leg_B_R"],
         max_wheel_speed=8.0,
-        leg_offset=0.5,
+        leg_offset=0.0,
         use_auto_extension=False,
         closed_at_upper_limit=False,
     )
@@ -173,8 +186,8 @@ class CommandsCfg:
 
     vel_cmd = mdp.UniformVelCommandCfg(
         resampling_time_range=(5.0, 10.0),
-        vx_range=(0.3, 0.8),
-        yaw_rate_range=(-1.0, 1.0),
+        vx_range=(0.2, 0.5),
+        yaw_rate_range=(-0.8, 0.8),
     )
 
 
@@ -224,9 +237,15 @@ class ObservationsCfg:
                     "robot",
                     joint_names=["wheel_F_L", "wheel_F_R", "wheel_B_R", "wheel_B_L"],
                 ),
-                "wheel_radius": 0.1,
+                "wheel_radius": 0.0508,
                 "ema_alpha": 0.1,
             },
+        )
+        # Forward terrain height map: 35 rays relative to robot base z.
+        # Gives the policy direct look-ahead so it can extend legs proactively.
+        terrain_scan = ObsTerm(
+            func=mdp.terrain_height_scan,
+            params={"sensor_name": "ray_caster"},
         )
 
         def __post_init__(self) -> None:
@@ -299,31 +318,60 @@ class RewardsCfg:
     vel_tracking = RewTerm(
         func=mdp.velocity_tracking_reward,
         weight=2.0,
-        params={"command_name": "vel_cmd", "std": 0.2},
+        params={"command_name": "vel_cmd", "std": 0.4},
     )
     yaw_tracking = RewTerm(
         func=mdp.yaw_rate_tracking_reward,
         weight=0.5,
-        params={"command_name": "vel_cmd", "std": 0.3},
+        params={"command_name": "vel_cmd", "std": 0.4},
     )
-    # Morphology efficiency: penalize leg extension on flat/easy terrain
+    # Morphology adaptation: biphasic signal driven by forward terrain scan.
+    # roughness_threshold=0.06 m: terrain height std of 6 cm → fully difficult.
     leg_extension_efficiency = RewTerm(
         func=mdp.leg_extension_efficiency,
-        weight=-1.0,
+        weight=-2.0,
         params={
             "asset_cfg": SceneEntityCfg(
                 "robot",
                 joint_names=["leg_F_L", "leg_F_R", "leg_B_L", "leg_B_R"],
             ),
-            "tilt_threshold": 0.15,
+            "sensor_name": "ray_caster",
+            "roughness_threshold": 0.04,
+        },
+    )
+    rough_terrain_leg_bonus = RewTerm(
+        func=mdp.rough_terrain_leg_bonus,
+        weight=2.0,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=["leg_F_L", "leg_F_R", "leg_B_L", "leg_B_R"],
+            ),
+            "sensor_name": "ray_caster",
+            "roughness_threshold": 0.04,
+        },
+    )
+    # Penalize being stuck (low velocity tracking) on rough terrain with legs retracted.
+    # Forces proactive leg extension before/during obstacles; scan-based so no feedback loops.
+    stuck_with_retracted_legs = RewTerm(
+        func=mdp.stuck_with_retracted_legs,
+        weight=-1.5,
+        params={
+            "command_name": "vel_cmd",
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=["leg_F_L", "leg_F_R", "leg_B_L", "leg_B_R"],
+            ),
+            "sensor_name": "ray_caster",
+            "roughness_threshold": 0.04,
         },
     )
     # Stability penalties
     wheel_slip = RewTerm(
         func=mdp.wheel_slip_penalty,
-        weight=-0.4,
+        weight=-1.5,
         params={
-            "wheel_radius": 0.1,
+            "wheel_radius": 0.0508,
             "asset_cfg": SceneEntityCfg(
                 "robot",
                 joint_names=["wheel_F_L", "wheel_F_R", "wheel_B_R", "wheel_B_L"],
@@ -338,6 +386,16 @@ class RewardsCfg:
         params={"asset_cfg": SceneEntityCfg("robot", joint_names=["wheel_.*", "leg_.*"])},
     )
     action = RewTerm(func=mdp.action_l2, weight=-0.0005)
+
+
+@configclass
+class CurriculumCfg:
+    """Terrain curriculum based on velocity tracking success."""
+
+    terrain_levels = CurrTerm(
+        func=mdp.terrain_levels_vel_tracking,
+        params={"command_name": "vel_cmd", "promote_threshold": 0.7, "demote_threshold": 0.3},
+    )
 
 
 @configclass
@@ -357,7 +415,7 @@ class AwmEnvCfg(ManagerBasedRLEnvCfg):
     events: EventCfg = EventCfg()
     rewards: RewardsCfg = RewardsCfg()
     terminations: TerminationsCfg = TerminationsCfg()
-    curriculum = None  # No goal-based curriculum; terrain mix is fixed
+    curriculum: CurriculumCfg = CurriculumCfg()
 
     def __post_init__(self) -> None:
         self.decimation = 2
@@ -366,3 +424,43 @@ class AwmEnvCfg(ManagerBasedRLEnvCfg):
         self.sim.dt = 1.0 / 120.0
         self.sim.render_interval = self.decimation
         self.sim.physics_material = self.scene.terrain.physics_material
+
+
+@configclass
+class AwmWheelsOnlyCfg(AwmEnvCfg):
+    """Ablation baseline: legs locked closed, wheels only.
+
+    leg_offset=-0.5 guarantees desired_extension=0 regardless of policy output:
+      policy_extension = 0.5 * leg_cmd + (-0.5), range [-1.0, 0.0]
+      clamp([-1.0, 0.0], 0, 1) = 0.0 always → legs never leave closed position.
+    Morphology reward terms are zeroed since they are meaningless without leg control.
+    """
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        # leg_offset=-0.5 mathematically clamps desired_extension to 0 for any policy output
+        self.actions.drive.leg_offset = -0.5
+        # Zero out morphology rewards — not applicable for wheels-only baseline
+        self.rewards.leg_extension_efficiency.weight = 0.0
+        self.rewards.rough_terrain_leg_bonus.weight = 0.0
+        self.rewards.stuck_with_retracted_legs.weight = 0.0
+
+
+@configclass
+class AwmLegsOpenCfg(AwmEnvCfg):
+    """Ablation baseline: legs locked fully open, wheels only.
+
+    leg_offset=1.5 guarantees desired_extension=1 regardless of policy output:
+      policy_extension = 0.5 * leg_cmd + 1.5, range [1.0, 2.0]
+      clamp([1.0, 2.0], 0, 1) = 1.0 always → legs always fully extended.
+    Morphology reward terms are zeroed since leg state is fixed.
+    """
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        # leg_offset=1.5 mathematically clamps desired_extension to 1 for any policy output
+        self.actions.drive.leg_offset = 1.5
+        # Zero out morphology rewards — leg state is fixed, these are meaningless
+        self.rewards.leg_extension_efficiency.weight = 0.0
+        self.rewards.rough_terrain_leg_bonus.weight = 0.0
+        self.rewards.stuck_with_retracted_legs.weight = 0.0

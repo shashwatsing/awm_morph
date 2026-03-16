@@ -109,33 +109,114 @@ def action_l2(env: ManagerBasedRLEnv) -> torch.Tensor:
     return torch.mean(torch.square(env.action_manager.action), dim=1)
 
 
-def leg_extension_efficiency(
-    env: ManagerBasedRLEnv,
-    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
-    tilt_threshold: float = 0.3,
-) -> torch.Tensor:
-    """Penalize leg extension when terrain is easy (robot is level).
-
-    On flat terrain the projected gravity vector stays close to (0, 0, -1), so
-    the xy-component magnitude is near zero.  We scale the extension penalty by
-    how easy the terrain currently is, creating a clear trade-off:
-      - flat  → terrain_ease ≈ 1 → penalised for keeping legs out
-      - rough → terrain_ease ≈ 0 → no extra penalty, legs can stay extended
-    """
+def _leg_extension_mean(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Helper: mean leg extension normalised to [0, 1] across all 4 legs."""
     asset: Articulation = env.scene[asset_cfg.name]
-
-    # Leg extension normalised to [0, 1] (0 = closed/wheel, 1 = fully open/leg)
     limits = asset.data.soft_joint_pos_limits[:, asset_cfg.joint_ids]  # (N, L, 2)
     lower, upper = limits[..., 0], limits[..., 1]
     leg_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
-    extension = (leg_pos - lower) / (upper - lower + 1e-6)
-    max_extension = torch.amax(torch.clamp(extension, 0.0, 1.0), dim=1)
+    extension = torch.clamp((leg_pos - lower) / (upper - lower + 1e-6), 0.0, 1.0)
+    return torch.mean(extension, dim=1)
 
-    # Terrain difficulty from projected gravity xy deviation (0 = flat, >0 = tilted)
+
+def _leg_extension_max(env: ManagerBasedRLEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
+    """Helper: max leg extension normalised to [0, 1] across all 4 legs.
+
+    Unlike mean, max cannot be gamed by extending a single leg partially —
+    any one leg sticking out gets the full penalty proportional to its extension.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    limits = asset.data.soft_joint_pos_limits[:, asset_cfg.joint_ids]  # (N, L, 2)
+    lower, upper = limits[..., 0], limits[..., 1]
+    leg_pos = asset.data.joint_pos[:, asset_cfg.joint_ids]
+    extension = torch.clamp((leg_pos - lower) / (upper - lower + 1e-6), 0.0, 1.0)
+    return torch.amax(extension, dim=1)
+
+
+def _locomotion_difficulty_from_state(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg,
+    tilt_threshold: float,
+) -> torch.Tensor:
+    """Reactive difficulty [0,1] from current body tilt only.
+
+    tilt = norm(projected_gravity_b[:, :2]) — 0 upright, ~1 at 90 deg tip
+    Slip is intentionally excluded: extended legs cause drag which raises slip,
+    creating a perverse feedback loop where legs justify their own extension.
+    Slip is already penalised separately via wheel_slip_penalty.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
     tilt = torch.norm(asset.data.projected_gravity_b[:, :2], dim=-1)
-    terrain_ease = 1.0 - torch.clamp(tilt / tilt_threshold, 0.0, 1.0)
+    return torch.nan_to_num(torch.clamp(tilt / tilt_threshold, 0.0, 1.0), nan=0.0)
 
-    return max_extension * terrain_ease
+
+def _terrain_difficulty_from_scan(
+    env: ManagerBasedRLEnv,
+    sensor_name: str,
+    roughness_threshold: float,
+) -> torch.Tensor:
+    """Compute terrain difficulty [0, 1] from ray caster scan.
+
+    Uses the MAX of two signals:
+      1. std(hit_z): detects rough/bumpy terrain in any direction.
+      2. max(positive rel_heights): detects upward obstacles only.
+         Downslopes produce only negative rel_heights → upward_height=0
+         → no difficulty → legs retract on descents (correct behaviour).
+
+    Flat terrain  → small std, no positive heights → difficulty ≈ 0.
+    Downslope     → small std, no positive heights → difficulty ≈ 0.
+    Upward stairs → large positive rel_heights     → difficulty → 1.
+    Random rough  → high std                       → difficulty → 1.
+    """
+    from isaaclab.sensors import RayCaster
+    from isaaclab.assets import Articulation
+    sensor: RayCaster = env.scene.sensors[sensor_name]
+    asset: Articulation = env.scene["robot"]
+    hit_z = sensor.data.ray_hits_w[:, :, 2]                              # (N, num_rays)
+    robot_z = asset.data.root_pos_w[:, 2:3]                               # (N, 1)
+    rel_heights = hit_z - robot_z                                          # (N, num_rays)
+
+    roughness = torch.std(hit_z, dim=1)                                    # bumpy terrain (all directions)
+    upward_height = torch.amax(torch.clamp(rel_heights, min=0.0), dim=1)   # upward obstacles only
+
+    difficulty = torch.clamp(
+        torch.maximum(roughness / roughness_threshold, upward_height / roughness_threshold),
+        0.0, 1.0,
+    )
+    return torch.nan_to_num(difficulty, nan=0.0)
+
+
+def leg_extension_efficiency(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    sensor_name: str = "ray_caster",
+    roughness_threshold: float = 0.04,
+) -> torch.Tensor:
+    """Penalize max leg extension when terrain ahead is flat.
+
+      - flat scan  → difficulty ≈ 0 → ease ≈ 1 → penalised for any leg out
+      - rough scan → difficulty ≈ 1 → ease ≈ 0 → no penalty
+    """
+    max_extension = _leg_extension_max(env, asset_cfg)
+    difficulty = _terrain_difficulty_from_scan(env, sensor_name, roughness_threshold)
+    terrain_ease = 1.0 - difficulty
+    return torch.nan_to_num(max_extension * terrain_ease, nan=0.0)
+
+
+def rough_terrain_leg_bonus(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    sensor_name: str = "ray_caster",
+    roughness_threshold: float = 0.04,
+) -> torch.Tensor:
+    """Reward mean leg extension when terrain ahead is rough.
+
+      - flat scan  → difficulty ≈ 0 → no bonus
+      - rough scan → difficulty ≈ 1 → bonus proportional to mean extension
+    """
+    mean_extension = _leg_extension_mean(env, asset_cfg)
+    difficulty = _terrain_difficulty_from_scan(env, sensor_name, roughness_threshold)
+    return torch.nan_to_num(mean_extension * difficulty, nan=0.0)
 
 
 def rough_terrain_speed_penalty(
@@ -195,3 +276,33 @@ def wheel_slip_penalty(
     mean_wheel_speed = torch.mean(wheel_lin_speed, dim=1)
     base_vx = torch.abs(asset.data.root_lin_vel_b[:, 0])
     return torch.nan_to_num(torch.clamp(mean_wheel_speed - base_vx, min=0.0, max=5.0), nan=0.0)
+
+
+def stuck_with_retracted_legs(
+    env: ManagerBasedRLEnv,
+    command_name: str = "vel_cmd",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    sensor_name: str = "ray_caster",
+    roughness_threshold: float = 0.04,
+) -> torch.Tensor:
+    """Penalize failing velocity tracking on rough terrain with legs retracted.
+
+    Fires when all three conditions hold simultaneously:
+      - vel_error is high (robot is stuck / not tracking commanded speed)
+      - legs are retracted (mean_extension ≈ 0)
+      - terrain ahead is difficult (scan difficulty ≈ 1)
+
+    This directly incentivizes proactive leg extension before/during rough terrain.
+    No perverse feedback loops: difficulty is scan-based (not leg-state-based).
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    vx_cmd = env.command_manager.get_command(command_name)[:, 0]
+    vx_actual = asset.data.root_lin_vel_b[:, 0]
+    vel_error = torch.clamp(torch.abs(vx_cmd - vx_actual), max=2.0)
+
+    mean_extension = _leg_extension_mean(env, asset_cfg)
+    legs_retracted = 1.0 - mean_extension  # 1.0 when fully retracted, 0.0 when fully extended
+
+    difficulty = _terrain_difficulty_from_scan(env, sensor_name, roughness_threshold)
+
+    return torch.nan_to_num(vel_error * legs_retracted * difficulty, nan=0.0)

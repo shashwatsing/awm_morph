@@ -29,7 +29,7 @@ ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
         ),
         "pyramid_stairs": terrain_gen.MeshPyramidStairsTerrainCfg(
             proportion=0.05,
-            step_height_range=(0.0, 0.1),
+            step_height_range=(0.0, 0.12),
             step_width=0.3,
             platform_width=3.0,
             border_width=1.0,
@@ -37,17 +37,17 @@ ROUGH_TERRAINS_CFG = TerrainGeneratorCfg(
         ),
         "pyramid_stairs_inv": terrain_gen.MeshInvertedPyramidStairsTerrainCfg(
             proportion=0.05,
-            step_height_range=(0.0, 0.1),
+            step_height_range=(0.0, 0.12),
             step_width=0.3,
             platform_width=3.0,
             border_width=1.0,
             holes=False,
         ),
         "wave_terrain": terrain_gen.HfWaveTerrainCfg(
-            proportion=0.2, amplitude_range=(0.0, 0.2), num_waves=4, border_width=0.25
+            proportion=0.2, amplitude_range=(0.0, 0.25), num_waves=4, border_width=0.25
         ),
         "random_rough": terrain_gen.HfRandomUniformTerrainCfg(
-            proportion=0.2, noise_range=(0.0, 0.06), noise_step=0.02, border_width=0.25
+            proportion=0.2, noise_range=(0.0, 0.08), noise_step=0.02, border_width=0.25
         ),
     },
 )

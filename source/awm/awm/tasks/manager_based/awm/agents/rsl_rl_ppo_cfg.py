@@ -42,6 +42,20 @@ class PPORunnerCfg(RslRlOnPolicyRunnerCfg):
 
 
 @configclass
+class PPOWheelsOnlyRunnerCfg(PPORunnerCfg):
+    """Ablation: wheels-only baseline, same architecture as adaptive policy."""
+    experiment_name = "awm_wheels_only"
+    wandb_project = "awm_morph"
+
+
+@configclass
+class PPOLegsOpenRunnerCfg(PPORunnerCfg):
+    """Ablation: legs-fully-open baseline, same architecture as adaptive policy."""
+    experiment_name = "awm_legs_open"
+    wandb_project = "awm_morph"
+
+
+@configclass
 class PPOFlatRunnerCfg(PPORunnerCfg):
     experiment_name = "awm_manager_flat"
     max_iterations = 10000

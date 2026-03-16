@@ -117,7 +117,7 @@ class AwmDriveActionCfg(ActionTermCfg):
     max_wheel_speed: float = 4.0
     leg_offset: float = 0.5
     use_auto_extension: bool = True
-    wheel_radius: float = 0.1
+    wheel_radius: float = 0.0508
     progress_threshold: float = 0.002
     slip_threshold: float = 0.2
     stuck_steps: int = 30

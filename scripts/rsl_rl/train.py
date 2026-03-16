@@ -78,6 +78,7 @@ if version.parse(installed_version) < version.parse(RSL_RL_VERSION):
 import gymnasium as gym
 import logging
 import os
+import statistics
 import torch
 from datetime import datetime
 
@@ -208,6 +209,21 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
     # dump the configuration into log-directory
     dump_yaml(os.path.join(log_dir, "params", "env.yaml"), env_cfg)
     dump_yaml(os.path.join(log_dir, "params", "agent.yaml"), agent_cfg)
+
+    # Patch runner.log to save model_best.pt whenever mean episode reward improves.
+    best_mean_reward = float("-inf")
+    original_log = runner.log
+
+    def _log_with_best_save(locs, width=80, pad=35):
+        nonlocal best_mean_reward
+        original_log(locs, width=width, pad=pad)
+        if locs.get("rewbuffer") and len(locs["rewbuffer"]) > 0:
+            mean_rew = statistics.mean(locs["rewbuffer"])
+            if mean_rew > best_mean_reward:
+                best_mean_reward = mean_rew
+                runner.save(os.path.join(log_dir, "model_best.pt"))
+
+    runner.log = _log_with_best_save
 
     # run training
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)

@@ -4,9 +4,12 @@
 python -m pip install -e source/awm
 
 # To start training - Change 0 and 1 for using GPU1 or GPU2
-HYDRA_FULL_ERROR=1 python scripts/rsl_rl/train.py --task Template-Awm_Manager-v0 --num_envs 1024 --max_iterations 1000
+HYDRA_FULL_ERROR=1 python scripts/rsl_rl/train.py --task Template-Awm_Morph-v0 --num_envs 1024 --headless
 
-HYDRA_FULL_ERROR=1 python scripts/rsl_rl/train.py --task Template-Awm_Manager-Flat-v0 --num_envs 1024 --device cuda:1 
+HYDRA_FULL_ERROR=1 python scripts/rsl_rl/train.py --task Template-Awm_Morph-v0 --num_envs 1024 --max_iterations 30000 --headless --device cuda:1
+
+# Wheel only ablation
+HYDRA_FULL_ERROR=1 python scripts/rsl_rl/train.py --task Template-Awm_WheelsOnly-v0 --num_envs 1024 --headless --device cuda:1
 
 # To play the trained policy 
 HYDRA_FULL_ERROR=1 python scripts/rsl_rl/play.py --task Template-Awm_Manager-v0 --num_envs 10 --checkpoint /home/shashwat/awm_manager/logs/rsl_rl/awm_manager/2026-02-05_12-55-55/model_250.pt
@@ -15,4 +18,4 @@ HYDRA_FULL_ERROR=1 python scripts/rsl_rl/play.py --task Template-Awm_Manager-v0 
 tensorboard --logdir logs/rsl_rl/awm_manager
 
 # To see envs name
-python scripts/list_envs.py
+python scripts/list_envs.py 

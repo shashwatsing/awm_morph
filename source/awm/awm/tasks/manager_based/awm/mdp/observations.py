@@ -94,6 +94,26 @@ def wheel_contact_forces(env, sensor_name: str = "contact_forces", body_names: s
     return torch.nan_to_num(torch.clamp(result, max=500.0), nan=0.0)
 
 
+def terrain_height_scan(
+    env,
+    sensor_name: str = "ray_caster",
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+) -> torch.Tensor:
+    """Return ray caster hit heights relative to robot base z.
+
+    Shape: (N, num_rays). Values clamped to [-0.5, 0.5] m.
+    Gives the policy a direct look-ahead terrain map so it can extend legs
+    before reaching rough terrain, not just after wheels start slipping.
+    """
+    from isaaclab.sensors import RayCaster
+    sensor: RayCaster = env.scene.sensors[sensor_name]
+    asset: Articulation = env.scene[asset_cfg.name]
+    hit_z = sensor.data.ray_hits_w[:, :, 2]     # (N, num_rays) world z
+    robot_z = asset.data.root_pos_w[:, 2:3]     # (N, 1)
+    rel_heights = hit_z - robot_z                # (N, num_rays) relative heights
+    return torch.nan_to_num(torch.clamp(rel_heights, -0.5, 0.5), nan=0.0)
+
+
 class progress_slip_history(ManagerTermBase):
     """EMA history features for forward progress and wheel slip."""
 
