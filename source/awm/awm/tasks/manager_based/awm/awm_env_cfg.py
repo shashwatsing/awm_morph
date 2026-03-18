@@ -23,7 +23,7 @@ from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
 
 from . import mdp
-from .terrains import ROUGH_TERRAINS_CFG
+from .terrains import ROUGH_TERRAINS_CFG, STAIRS_EVAL_CFG
 
 _WORKSPACE_ROOT = os.path.abspath(os.path.dirname(__file__))
 _USD_PATH = os.path.join(_WORKSPACE_ROOT, "custom_assets", "awm.usd")
@@ -366,6 +366,19 @@ class RewardsCfg:
             "roughness_threshold": 0.04,
         },
     )
+    # Penalize tilt when legs are retracted: rewards keeping body parallel to ground.
+    # tilt_threshold=1.0 → full penalty at ~5.8° tilt. Sim2real: IMU + joint encoders.
+    body_tilt_with_retracted_legs = RewTerm(
+        func=mdp.body_tilt_with_retracted_legs,
+        weight=-1.5,
+        params={
+            "asset_cfg": SceneEntityCfg(
+                "robot",
+                joint_names=["leg_F_L", "leg_F_R", "leg_B_L", "leg_B_R"],
+            ),
+            "tilt_threshold": 1.0,
+        },
+    )
     # Stability penalties
     wheel_slip = RewTerm(
         func=mdp.wheel_slip_penalty,
@@ -444,6 +457,37 @@ class AwmWheelsOnlyCfg(AwmEnvCfg):
         self.rewards.leg_extension_efficiency.weight = 0.0
         self.rewards.rough_terrain_leg_bonus.weight = 0.0
         self.rewards.stuck_with_retracted_legs.weight = 0.0
+        self.rewards.body_tilt_with_retracted_legs.weight = 0.0
+
+
+@configclass
+class AwmStairsEvalCfg(AwmEnvCfg):
+    """Evaluation config: stairs-only terrain, small grid for easy observation.
+
+    Use with num_envs=4 so all robots are visible in one view.
+    All 10 terrain levels span step heights 0.02–0.15 m.
+    """
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.scene.terrain.terrain_generator = STAIRS_EVAL_CFG
+        # Start on easiest row (row 0, ~0.02m steps); curriculum advances to harder rows on success
+        self.scene.terrain.max_init_terrain_level = 0
+
+
+@configclass
+class AwmProprioOnlyCfg(AwmEnvCfg):
+    """Ablation: proprioception-only — terrain_scan removed from observations.
+
+    The ray_caster sensor stays in the scene so morphology rewards still work.
+    Only the 35-dim terrain_scan observation is removed, so the policy must rely
+    purely on proprioceptive signals (tilt, slip, velocity error) to decide when
+    to extend legs. Compares against adaptive to quantify the value of look-ahead.
+    """
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.observations.policy.terrain_scan = None
 
 
 @configclass
@@ -464,3 +508,4 @@ class AwmLegsOpenCfg(AwmEnvCfg):
         self.rewards.leg_extension_efficiency.weight = 0.0
         self.rewards.rough_terrain_leg_bonus.weight = 0.0
         self.rewards.stuck_with_retracted_legs.weight = 0.0
+        self.rewards.body_tilt_with_retracted_legs.weight = 0.0

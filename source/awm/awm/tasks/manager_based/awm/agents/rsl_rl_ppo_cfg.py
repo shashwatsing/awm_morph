@@ -49,6 +49,13 @@ class PPOWheelsOnlyRunnerCfg(PPORunnerCfg):
 
 
 @configclass
+class PPOProprioOnlyRunnerCfg(PPORunnerCfg):
+    """Ablation: proprioception-only (no terrain scan observation)."""
+    experiment_name = "awm_proprio_only"
+    wandb_project = "awm_morph"
+
+
+@configclass
 class PPOLegsOpenRunnerCfg(PPORunnerCfg):
     """Ablation: legs-fully-open baseline, same architecture as adaptive policy."""
     experiment_name = "awm_legs_open"

@@ -278,6 +278,35 @@ def wheel_slip_penalty(
     return torch.nan_to_num(torch.clamp(mean_wheel_speed - base_vx, min=0.0, max=5.0), nan=0.0)
 
 
+def body_tilt_with_retracted_legs(
+    env: ManagerBasedRLEnv,
+    asset_cfg: SceneEntityCfg = SceneEntityCfg("robot"),
+    tilt_threshold: float = 1.0,
+) -> torch.Tensor:
+    """Penalize body tilt when legs are retracted.
+
+    Encourages the robot to keep the body parallel to the ground by extending legs.
+
+    penalty = tilt_normalized × legs_retracted
+      - flat terrain (tilt≈0)  → penalty≈0 → efficiency term still keeps legs closed
+      - rough terrain (tilt>0) → penalty fires → robot extends legs → tilt reduces
+      - no perverse loop: extending legs always reduces legs_retracted regardless of tilt
+
+    tilt_threshold=1.0 → penalty ramps linearly from 0 at 0° to 1.0 at ~5.8°.
+
+    Sim2real: tilt from BNO085 IMU (projected_gravity roll/pitch components),
+              legs_retracted from joint encoders. No extra sensors needed.
+    """
+    asset: Articulation = env.scene[asset_cfg.name]
+    tilt = torch.norm(asset.data.projected_gravity_b[:, :2], dim=-1)
+    tilt_normalized = torch.clamp(tilt / tilt_threshold, 0.0, 1.0)
+
+    mean_extension = _leg_extension_mean(env, asset_cfg)
+    legs_retracted = 1.0 - mean_extension
+
+    return torch.nan_to_num(tilt_normalized * legs_retracted, nan=0.0)
+
+
 def stuck_with_retracted_legs(
     env: ManagerBasedRLEnv,
     command_name: str = "vel_cmd",

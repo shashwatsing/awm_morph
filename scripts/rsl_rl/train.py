@@ -212,18 +212,25 @@ def main(env_cfg: ManagerBasedRLEnvCfg | DirectRLEnvCfg | DirectMARLEnvCfg, agen
 
     # Patch runner.log to save model_best.pt whenever mean episode reward improves.
     best_mean_reward = float("-inf")
-    original_log = runner.log
+    _original_log_fn = runner.__class__.log  # unbound class method
 
-    def _log_with_best_save(locs, width=80, pad=35):
+    def _log_with_best_save(self_runner, locs, width=80, pad=35):
         nonlocal best_mean_reward
-        original_log(locs, width=width, pad=pad)
-        if locs.get("rewbuffer") and len(locs["rewbuffer"]) > 0:
-            mean_rew = statistics.mean(locs["rewbuffer"])
+        _original_log_fn(self_runner, locs, width=width, pad=pad)
+        rewbuf = locs.get("rewbuffer")
+        if rewbuf is not None and len(rewbuf) > 0:
+            mean_rew = statistics.mean(rewbuf)
             if mean_rew > best_mean_reward:
                 best_mean_reward = mean_rew
-                runner.save(os.path.join(log_dir, "model_best.pt"))
+                save_path = os.path.join(self_runner.log_dir, "model_best.pt")
+                try:
+                    self_runner.save(save_path)
+                    print(f"[model_best] saved at iter {locs.get('it', '?')} with mean_reward={mean_rew:.4f}")
+                except Exception as e:
+                    print(f"[model_best] save failed: {e}")
 
-    runner.log = _log_with_best_save
+    import types
+    runner.log = types.MethodType(_log_with_best_save, runner)
 
     # run training
     runner.learn(num_learning_iterations=agent_cfg.max_iterations, init_at_random_ep_len=True)

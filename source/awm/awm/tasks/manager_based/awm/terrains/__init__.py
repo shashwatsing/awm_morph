@@ -3,6 +3,6 @@
 #
 # SPDX-License-Identifier: BSD-3-Clause
 
-from .terrain_generator_cfg import ROUGH_TERRAINS_CFG
+from .terrain_generator_cfg import ROUGH_TERRAINS_CFG, STAIRS_EVAL_CFG
 
-__all__ = ["ROUGH_TERRAINS_CFG"]
+__all__ = ["ROUGH_TERRAINS_CFG", "STAIRS_EVAL_CFG"]
