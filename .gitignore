@@ -61,6 +61,10 @@ _build
 # Pre-Trained Checkpoints
 /.pretrained_checkpoints/
 
+# Model checkpoints — stored locally and tracked via wandb, not git
+**/*.pt
+**/exported/
+
 # Teleop Recorded Dataset
 /datasets/
 

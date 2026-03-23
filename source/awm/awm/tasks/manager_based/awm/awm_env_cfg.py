@@ -21,6 +21,7 @@ from isaaclab.sensors import ContactSensorCfg, RayCasterCfg, patterns
 from isaaclab.terrains import TerrainImporterCfg
 from isaaclab.utils import configclass
 from isaaclab.utils.assets import ISAACLAB_NUCLEUS_DIR
+from isaaclab.utils.noise import GaussianNoiseCfg
 
 from . import mdp
 from .terrains import ROUGH_TERRAINS_CFG, STAIRS_EVAL_CFG
@@ -243,9 +244,11 @@ class ObservationsCfg:
         )
         # Forward terrain height map: 35 rays relative to robot base z.
         # Gives the policy direct look-ahead so it can extend legs proactively.
+        # Gaussian noise (std=0.02m) matches ZED 2i depth noise for sim2real transfer.
         terrain_scan = ObsTerm(
             func=mdp.terrain_height_scan,
             params={"sensor_name": "ray_caster"},
+            noise=GaussianNoiseCfg(mean=0.0, std=0.02),
         )
 
         def __post_init__(self) -> None:
