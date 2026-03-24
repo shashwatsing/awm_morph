@@ -206,9 +206,12 @@ class ObservationsCfg:
             params={"command_name": "vel_cmd"},
         )
         # Robot velocity feedback
-        base_lin_vel_x = ObsTerm(func=mdp.base_lin_vel_x)
-        base_ang_vel_z = ObsTerm(func=mdp.base_ang_vel_z)
+        # base_lin_vel_x: from ZED VIO or wheel odometry — moderate drift noise
+        base_lin_vel_x = ObsTerm(func=mdp.base_lin_vel_x, noise=GaussianNoiseCfg(mean=0.0, std=0.05))
+        # base_ang_vel_z: from ZED IMU gyroscope — small gyro noise
+        base_ang_vel_z = ObsTerm(func=mdp.base_ang_vel_z, noise=GaussianNoiseCfg(mean=0.0, std=0.02))
         # Wheel state
+        # wheel_velocities: Dynamixel encoders — accurate, minor noise
         wheel_velocities = ObsTerm(
             func=mdp.wheel_velocities,
             params={
@@ -217,8 +220,10 @@ class ObservationsCfg:
                     joint_names=["wheel_F_L", "wheel_F_R", "wheel_B_R", "wheel_B_L"],
                 )
             },
+            noise=GaussianNoiseCfg(mean=0.0, std=0.1),
         )
         # Leg state
+        # leg_positions: Dynamixel encoders — very accurate, minimal noise
         leg_positions = ObsTerm(
             func=mdp.leg_positions,
             params={
@@ -227,10 +232,12 @@ class ObservationsCfg:
                     joint_names=["leg_F_L", "leg_F_R", "leg_B_L", "leg_B_R"],
                 )
             },
+            noise=GaussianNoiseCfg(mean=0.0, std=0.01),
         )
         leg_actions = ObsTerm(func=mdp.leg_actions, params={"num_wheels": 4})
         # Terrain / stability feedback
-        projected_gravity = ObsTerm(func=mdp.projected_gravity)
+        # projected_gravity: ZED IMU accelerometer — corrupted by motor/wheel vibrations
+        projected_gravity = ObsTerm(func=mdp.projected_gravity, noise=GaussianNoiseCfg(mean=0.0, std=0.05))
         progress_slip_hist = ObsTerm(
             func=mdp.progress_slip_history,
             params={

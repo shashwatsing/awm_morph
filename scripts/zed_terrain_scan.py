@@ -169,41 +169,105 @@ class TerrainScanner:
 
 
 # ---------------------------------------------------------------------------
-# Standalone test — visualise the 7x5 grid live in terminal
+# Standalone test — terminal + matplotlib heatmap visualisation
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import time
+    import argparse
+    import matplotlib.pyplot as plt
+    import matplotlib.colors as mcolors
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--cam-height",   type=float, default=0.15,  help="Camera height above robot base (m)")
+    parser.add_argument("--cam-forward",  type=float, default=0.05,  help="Camera forward offset (m)")
+    parser.add_argument("--tilt-deg",     type=float, default=30.0,  help="Camera downward tilt (degrees)")
+    parser.add_argument("--floor-offset", type=float, default=None,  help="Floor z offset for calibration (m). "
+                                                                           "If not set, auto-calibrates from first 20 frames.")
+    parser.add_argument("--no-plot",      action="store_true",        help="Terminal only, no matplotlib window")
+    args = parser.parse_args()
 
     scanner = TerrainScanner(
-        cam_height=0.15,
-        cam_forward=0.05,
-        tilt_deg=30.0,
+        cam_height=args.cam_height,
+        cam_forward=args.cam_forward,
+        tilt_deg=args.tilt_deg,
     )
     scanner.start()
 
     print(f"Grid {GRID_NX}x{GRID_NY} | resolution={GRID_RES}m")
     print(f"Forward range : {GRID_X[0]:.2f} – {GRID_X[-1]:.2f} m")
     print(f"Lateral range : {GRID_Y[0]:.2f} – {GRID_Y[-1]:.2f} m")
+
+    # Auto-calibrate floor offset if not provided
+    floor_offset = args.floor_offset
+    if floor_offset is None:
+        print("Auto-calibrating floor offset from 20 frames (point at flat floor)...")
+        samples = []
+        for _ in range(20):
+            s = scanner.get_terrain_scan(robot_base_z=0.0)
+            valid = s[s != 0.0]
+            if len(valid) > 0:
+                samples.append(valid)
+            time.sleep(0.05)
+        if samples:
+            floor_offset = float(np.median(np.concatenate(samples)))
+            print(f"Floor offset: {floor_offset:.3f}m  (pass --floor-offset {floor_offset:.3f} to skip next time)")
+        else:
+            floor_offset = 0.0
+            print("No valid points found, using floor_offset=0.0")
+
     print("Ctrl+C to stop\n")
+
+    # Setup matplotlib heatmap
+    if not args.no_plot:
+        plt.ion()
+        fig, ax = plt.subplots(figsize=(6, 8))
+        dummy = np.zeros((GRID_NX, GRID_NY))
+        im = ax.imshow(dummy, vmin=-0.3, vmax=0.3, cmap="RdYlGn_r",
+                       aspect="auto", origin="lower")
+        plt.colorbar(im, ax=ax, label="Height relative to floor (m)")
+        ax.set_xlabel("Lateral (L ← → R)")
+        ax.set_ylabel("Forward distance (m)")
+        ax.set_xticks(range(GRID_NY))
+        ax.set_xticklabels([f"{y:.2f}" for y in GRID_Y])
+        ax.set_yticks(range(GRID_NX))
+        ax.set_yticklabels([f"{x:.2f}" for x in GRID_X])
+        ax.set_title("AWM terrain_scan — ZED 2i live")
+        text_overlays = [[ax.text(j, i, "", ha="center", va="center",
+                                  fontsize=8, color="black")
+                          for j in range(GRID_NY)] for i in range(GRID_NX)]
+        plt.tight_layout()
 
     try:
         while True:
-            scan = scanner.get_terrain_scan(robot_base_z=0.0)
+            scan = scanner.get_terrain_scan(robot_base_z=floor_offset)
             gravity, yaw_rate = scanner.get_imu_data()
             grid = scan.reshape(GRID_NX, GRID_NY)
 
-            print("\033[H\033[J", end="")  # clear terminal
+            # Terminal output
+            print("\033[H\033[J", end="")
             print("terrain_scan — rows=forward distance, cols=left→right")
+            print(f"floor_offset={floor_offset:.3f}m")
             print(f"{'':6s}  {'L':^7s}  {'':^7s}  {'C':^7s}  {'':^7s}  {'R':^7s}")
-            for i in range(GRID_NX - 1, -1, -1):  # far row printed first
+            for i in range(GRID_NX - 1, -1, -1):
                 vals = "  ".join(f"{grid[i, j]:+.3f}" for j in range(GRID_NY))
                 print(f"{GRID_X[i]:.2f}m  {vals}")
             print(f"\ngravity xyz : {gravity[0]:+.3f}  {gravity[1]:+.3f}  {gravity[2]:+.3f}")
             print(f"yaw_rate    : {yaw_rate:+.4f} rad/s")
             print(f"scan range  : {scan.min():+.3f} to {scan.max():+.3f} m")
 
+            # Heatmap update
+            if not args.no_plot:
+                im.set_data(grid)
+                for i in range(GRID_NX):
+                    for j in range(GRID_NY):
+                        text_overlays[i][j].set_text(f"{grid[i,j]:+.2f}")
+                fig.canvas.draw()
+                fig.canvas.flush_events()
+
             time.sleep(0.033)  # ~30 Hz
 
     except KeyboardInterrupt:
         print("\nStopped.")
+        if not args.no_plot:
+            plt.close()
         scanner.stop()
