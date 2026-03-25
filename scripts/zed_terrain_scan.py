@@ -1,5 +1,5 @@
 """
-ZED 2i → terrain_scan[35] pipeline for AWM real-world deployment.
+ZED Mini → terrain_scan[35] pipeline for AWM real-world deployment.
 
 Replicates the sim ray caster: 7x5 grid at 0.15m resolution,
 covering 0.9m wide x 0.6m deep ahead of the robot.
@@ -40,12 +40,14 @@ GRID_Y = np.array([GRID_Y_START + j * GRID_RES for j in range(GRID_NY)])  # [-0.
 
 class TerrainScanner:
     """
-    Wraps ZED 2i SDK 5.x to produce terrain_scan[35] and IMU data.
+    Wraps ZED Mini SDK 5.x to produce terrain_scan[35] and IMU data.
 
     Camera mounting parameters (adjust to match your physical setup):
-        cam_height:  metres above robot base z
-        cam_forward: metres forward of robot base origin
-        tilt_deg:    downward tilt angle in degrees
+        cam_height:   metres above robot base z
+        cam_forward:  metres forward of robot base origin
+        tilt_deg:     downward tilt angle in degrees
+        yaw_alpha:    low-pass filter coefficient for yaw_rate (0=frozen, 1=raw).
+                      Default 0.2 smooths gyro flicker without adding much lag.
     """
 
     def __init__(
@@ -53,6 +55,7 @@ class TerrainScanner:
         cam_height: float = 0.15,
         cam_forward: float = 0.05,
         tilt_deg: float = 30.0,
+        yaw_alpha: float = 0.2,
         resolution=sl.RESOLUTION.HD720,
         depth_mode=sl.DEPTH_MODE.ULTRA,
     ):
@@ -63,7 +66,7 @@ class TerrainScanner:
         init_params.depth_mode = depth_mode
         init_params.coordinate_units = sl.UNIT.METER
         init_params.coordinate_system = sl.COORDINATE_SYSTEM.RIGHT_HANDED_Z_UP_X_FWD
-        init_params.depth_minimum_distance = 0.3
+        init_params.depth_minimum_distance = 0.1  # ZED Mini supports 0.1m (vs 0.3m for ZED 2i)
         init_params.depth_maximum_distance = 2.0
         self._init_params = init_params
 
@@ -77,6 +80,8 @@ class TerrainScanner:
         self.T_cam_to_body = self._build_extrinsics(cam_height, cam_forward, tilt_deg)
 
         self._last_scan = np.zeros(GRID_NX * GRID_NY, dtype=np.float32)
+        self._yaw_alpha = yaw_alpha
+        self._yaw_rate_filtered = 0.0
 
     @staticmethod
     def _build_extrinsics(cam_height: float, cam_forward: float, tilt_deg: float) -> np.ndarray:
@@ -95,12 +100,12 @@ class TerrainScanner:
     def start(self):
         err = self._camera.open(self._init_params)
         if err != sl.ERROR_CODE.SUCCESS:
-            raise RuntimeError(f"ZED 2i failed to open: {err}")
-        print("[TerrainScanner] ZED 2i opened successfully")
+            raise RuntimeError(f"ZED Mini failed to open: {err}")
+        print("[TerrainScanner] ZED Mini opened successfully")
 
     def stop(self):
         self._camera.close()
-        print("[TerrainScanner] ZED 2i closed")
+        print("[TerrainScanner] ZED Mini closed")
 
     def get_terrain_scan(self, robot_base_z: float = 0.0) -> np.ndarray:
         """
@@ -150,11 +155,12 @@ class TerrainScanner:
 
     def get_imu_data(self):
         """
-        Returns (projected_gravity[3], yaw_rate) from ZED 2i IMU.
+        Returns (projected_gravity[3], yaw_rate) from ZED Mini IMU.
 
         projected_gravity: accelerometer reading in body frame (m/s²).
                            When upright and still: approx [0, 0, -9.81].
-        yaw_rate:          rotation rate around vertical axis (rad/s).
+        yaw_rate:          rotation rate around vertical axis (rad/s),
+                           low-pass filtered to reduce gyro flicker at rest.
         """
         self._camera.get_sensors_data(self._sensors_data, sl.TIME_REFERENCE.CURRENT)
         imu = self._sensors_data.get_imu_data()
@@ -163,9 +169,14 @@ class TerrainScanner:
         gyro  = imu.get_angular_velocity()
 
         projected_gravity = np.array([accel[0], accel[1], accel[2]], dtype=np.float32)
-        yaw_rate = float(gyro[2])
 
-        return projected_gravity, yaw_rate
+        # Low-pass filter: smooths gyro zero-rate flicker without adding much lag
+        raw_yaw = float(gyro[2])
+        self._yaw_rate_filtered = (
+            self._yaw_alpha * raw_yaw + (1.0 - self._yaw_alpha) * self._yaw_rate_filtered
+        )
+
+        return projected_gravity, self._yaw_rate_filtered
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +242,7 @@ if __name__ == "__main__":
         ax.set_xticklabels([f"{y:.2f}" for y in GRID_Y])
         ax.set_yticks(range(GRID_NX))
         ax.set_yticklabels([f"{x:.2f}" for x in GRID_X])
-        ax.set_title("AWM terrain_scan — ZED 2i live")
+        ax.set_title("AWM terrain_scan — ZED Mini live")
         text_overlays = [[ax.text(j, i, "", ha="center", va="center",
                                   fontsize=8, color="black")
                           for j in range(GRID_NY)] for i in range(GRID_NX)]
